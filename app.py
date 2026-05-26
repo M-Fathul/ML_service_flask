@@ -10,9 +10,9 @@ app = Flask(__name__)
 API_KEY = "your_api_key_here"
 
 @app.route("/")
-def index():
-    time = datetime.now().date() - timedelta(days=1)
-    return f"Welcome to the Dummy Forecast API! Use /forecast endpoint to get predictions. Current time: {time}"
+# def index():
+#     time = datetime.now().date() - timedelta(days=1)
+#     return f"Welcome to the Dummy Forecast API! Use /forecast endpoint to get predictions. Current time: {time}"
 
 def fill_missing_dates(df):
     df['ds'] = pd.to_datetime(df['ds'])
