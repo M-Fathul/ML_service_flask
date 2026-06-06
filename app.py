@@ -10,23 +10,31 @@ app = Flask(__name__)
 API_KEY = "your_api_key_here"
 
 @app.route("/")
-# def index():
-#     time = datetime.now().date() - timedelta(days=1)
-#     return f"Welcome to the Dummy Forecast API! Use /forecast endpoint to get predictions. Current time: {time}"
+def index():
+    time = datetime.now().date() - timedelta(days=1)
+    return f"Welcome to the Dummy Forecast API! Use /forecast endpoint to get predictions. Current time: {time}"
 
 def fill_missing_dates(df):
-    df['ds'] = pd.to_datetime(df['ds'])
+    date_col = df.select_dtypes(include=['object']).columns.tolist()
+    df[date_col[0]] = pd.to_datetime(df[date_col[0]])
 
     now = datetime.now(pytz.timezone('Asia/Jakarta')).date() - timedelta(days=1)
 
-    full_range = pd.date_range(start=df['ds'].min(), end=now)
+    full_range = pd.date_range(start=df[date_col[0]].min(), end=now)
 
-    df = df.set_index('ds').reindex(full_range).fillna(0).rename_axis('ds').reset_index()
+    df = df.set_index(date_col[0]).reindex(full_range).fillna(0).rename_axis(date_col[0]).reset_index()
 
     return df
 
+def transform_prophet(df):
+    date_col = df.select_dtypes(include=['datetime64']).columns.tolist()
+    data = df.select_dtypes(exclude=['datetime64']).columns.tolist()
+    df = df.rename(columns={date_col[0]: 'ds', data[0]: 'y'})
+    return df[['ds', 'y']]
+
 def calculate_mape(actual, forecast):
-    actual, forecast = np.array(actual), np.array(forecast)
+    actual = np.array(actual, dtype=float)
+    forecast = np.array(forecast, dtype=float)
 
     mask = actual != 0
     valid_actual = actual[mask]
@@ -35,7 +43,7 @@ def calculate_mape(actual, forecast):
     if len(valid_actual) > 0 and len(valid_forecast) > 0:
         return np.mean(np.abs((valid_forecast - valid_actual) / valid_actual)) * 100
     else:
-        return 0  # atau nilai default lainnya
+        return 0
 
 
 def generate_insight(mape):
@@ -65,14 +73,22 @@ def forecast():
     if auth_header != f"Bearer {API_KEY}":
         return jsonify({"error": "Unauthorized"}), 401
 
-    data = request.json
+    try:
+        data = request.json
+        if not data or 'data' not in data:
+            return jsonify({"error": "Invalid payload"}), 400
+
+        if len(data['data'][0].keys()) > 3:
+            return jsonify({"error": "Invalid data"}), 400
+            
+    except Exception as e:
+        return jsonify({"error": "Invalid request" + str(e)}), 400
 
     df = pd.DataFrame(data['data'])
     periods = data.get('periods')
 
     df = fill_missing_dates(df)
-
-
+    df = transform_prophet(df)
 
     test_size = min(30, int(len(df) * 0.2))
     train_df = df[:-test_size]
