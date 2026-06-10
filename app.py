@@ -10,10 +10,10 @@ app = Flask(__name__)
 
 API_KEY = "your_api_key_here"
 
-@app.route("/")
-def index():
-    time = datetime.now().date() - timedelta(days=1)
-    return f"Welcome to the Dummy Forecast API! Use /forecast endpoint to get predictions. Current time: {time}"
+# @app.route("/")
+# def index():
+#     time = datetime.now().date() - timedelta(days=1)
+#     return f"Welcome to the Dummy Forecast API! Use /forecast endpoint to get predictions. Current time: {time}"
 
 def fill_missing_dates(df):
     date_col = df.select_dtypes(include=['object']).columns.tolist()
@@ -115,8 +115,8 @@ def generate_insight(mape):
             "reason": "Data sangat fluktuatif atau pola tidak konsisten akibat minimnya data historis."
         }
 
-@app.route('/forecast', methods=['POST'])
-def forecast():
+@app.route('/forecast/prophet', methods=['POST'])
+def forecast_prophet():
 
     auth_header = request.headers.get('Authorization')
     if auth_header != f"Bearer {API_KEY}":
@@ -137,7 +137,106 @@ def forecast():
     periods = data.get('periods')
 
     df = fill_missing_dates(df)
-    # df = transform_prophet(df)
+    df = transform_prophet(df)
+
+    test_size = min(30, int(len(df) * 0.2))
+    train_df = df[:-test_size]
+    test_df = df[-test_size:]
+
+    model = Prophet(
+        daily_seasonality=False,
+        weekly_seasonality=True,
+        yearly_seasonality=True,
+        changepoint_prior_scale=0.1,
+        seasonality_mode='additive'
+    )
+    model.add_country_holidays(country_name='ID')
+
+    model.fit(train_df)
+
+    future_test = model.make_future_dataframe(periods=test_size)
+    forecast_test = model.predict(future_test)
+
+    mape = calculate_mape(
+        df['y'].values,
+        forecast_test['yhat'].values
+    )
+
+    model_full = Prophet(
+        daily_seasonality=False,
+        weekly_seasonality=True,
+        yearly_seasonality=True,
+        changepoint_prior_scale=0.1,
+        seasonality_mode='additive'
+    )
+    model_full.add_country_holidays(country_name='ID')
+
+    model_full.fit(df)
+
+    future = model_full.make_future_dataframe(periods=periods)
+    forecast = model_full.predict(future)
+
+    forecast = forecast.tail(periods)
+
+    forecast_result = []
+    for _, row in forecast.iterrows():
+        forecast_result.append({
+            "tanggal_transaksi": row['ds'].strftime('%Y-%m-%d'),
+            "month": row['ds'].strftime('%B'),
+            "week": row['ds'].isocalendar()[1],
+            "year": row['ds'].year,
+            "prediction": max(0, float(round(row['yhat'], 0))),
+            "yhat_lower": max(0, float(round(row['yhat_lower'], 0))),
+            "yhat_upper": max(0, float(round(row['yhat_upper'], 0))),
+        })
+
+    validation_result = []
+    
+    forecast_test = forecast_test.tail(test_size)
+
+    for i in range(len(test_df)):
+        validation_result.append({
+            "tanggal_transaksi": test_df.iloc[i]['ds'].strftime('%Y-%m-%d'),
+            "month": test_df.iloc[i]['ds'].strftime('%B'),
+            "week": test_df.iloc[i]['ds'].isocalendar()[1],
+            "year": test_df.iloc[i]['ds'].year,
+            "aktual": int(test_df.iloc[i]['y']),
+            "prediction": max(0, float(round(forecast_test.iloc[i]['yhat'], 0))),
+        })
+
+    insight = generate_insight(mape)
+
+    return jsonify({
+        "forecast": forecast_result,
+        "validation": validation_result,
+        "mape": float(round(mape, 2)),
+        "train_start": df['ds'].min().strftime('%Y-%m-%d'),
+        "train_end": df['ds'].max().strftime('%Y-%m-%d'),
+        "insight": insight
+    })
+
+@app.route('/forecast/xgboost', methods=['POST'])
+def forecast_xgboost():
+
+    auth_header = request.headers.get('Authorization')
+    if auth_header != f"Bearer {API_KEY}":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        data = request.json
+        if not data or 'data' not in data:
+            return jsonify({"error": "Invalid payload"}), 400
+
+        if len(data['data'][0].keys()) > 3:
+            return jsonify({"error": "Invalid data"}), 400
+            
+    except Exception as e:
+        return jsonify({"error": "Invalid request" + str(e)}), 400
+
+    df = pd.DataFrame(data['data'])
+    periods = data.get('periods')
+
+    df = fill_missing_dates(df)
     feature_df = create_features(df)
 
     feature_cols = [
@@ -236,7 +335,6 @@ def forecast():
 
         X_future = pd.DataFrame([row])
         
-        # Convert lag and rolling columns to float to avoid XGBoost dtype error
         lag_cols = [col for col in X_future.columns if col.startswith('lag_') or col.startswith('rolling_')]
         for col in lag_cols:
             X_future[col] = X_future[col].astype(float)
